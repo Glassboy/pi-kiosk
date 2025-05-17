@@ -1,0 +1,86 @@
+---
+- name: Setup Raspberry Pi as a Kiosk
+  hosts: localhost
+  become: true
+  tasks:
+    # Check if the system is a Raspberry Pi 5
+    - name: Gather Raspberry Pi model information
+      ansible.builtin.command:
+        cmd: cat /proc/device-tree/model
+      register: pi_model
+
+    # Change configuration for a Raspberry Pi 5
+    - name: Raspberry Pi 5 configurations
+      when: "'Raspberry Pi 5' in pi_model.stdout"
+      block:
+        - name: Speed up storage (Raspberry Pi 5 only)
+          ansible.builtin.lineinfile:
+            path: /boot/firmware/config.txt
+            line: 'dtparam=pciex1_gen=3'
+            state: present
+
+        - name: Increase swap file size (Raspberry Pi 5 only)
+          ansible.builtin.replace:
+            path: /etc/dphys-swapfile
+            regexp: '^CONF_SWAPSIZE=.*'
+            replace: 'CONF_SWAPSIZE=512'
+
+    - name: Update and upgrade system packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+
+    - name: Gather installed package facts
+      ansible.builtin.package_facts:
+        manager: apt        
+
+    - name: Install firewall (ufw)
+      when: "'ufw' not in ansible_facts.packages"
+      block:
+        - name: Install ufw package
+          ansible.builtin.apt:
+            name: ufw
+            state: present
+
+        - name: Enable and start ufw
+          community.general.ufw:
+            state: enabled
+
+    - name: Allow SSH (port 22) in the firewall
+      community.general.ufw:
+        rule: allow
+        name: ssh
+
+    - name: Set up Cockpit
+      block:
+        - name: Install Cockpit
+          ansible.builtin.apt:
+            name:
+              - cockpit
+              - cockpit-pcp
+            state: present
+
+        - name: Enable and start Cockpit
+          ansible.builtin.systemd:
+            name: cockpit
+            enabled: true
+            state: started
+
+        - name: Allow Cockpit service through UFW
+          community.general.ufw:
+            rule: allow
+            name: cockpit
+
+    - name: Ensure autologin is enabled for 'pi' user
+      ansible.builtin.lineinfile:
+        path: /etc/lightdm/lightdm.conf
+        regexp: '^#?autologin-user='
+        line: 'autologin-user=pi'
+      notify: Restart LightDM
+
+      handlers:
+        - name: Restart LightDM
+          ansible.builtin.service:
+            name: lightdm
+            state: restarted
+
